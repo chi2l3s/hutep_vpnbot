@@ -142,8 +142,12 @@ async def on_startup() -> None:
     print("Startup: DB initialized", flush=True)
     if settings.webhook_host:
         path = settings.webhook_path or "/webhook"
-        await bot.set_webhook(f"{settings.webhook_host}{path}")
-        print("Startup: Webhook set", flush=True)
+        webhook_url = f"{settings.webhook_host}{path}"
+        try:
+            await bot.set_webhook(webhook_url)
+            print(f"Startup: Webhook set to {webhook_url}", flush=True)
+        except Exception as e:
+            print(f"Startup: Failed to set webhook: {e}", flush=True)
 
 
 async def on_shutdown() -> None:
