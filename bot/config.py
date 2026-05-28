@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # === Прокси ===
     proxy: str = ""
 
+    # === VPN Subscription ===
+    subscription_domain: str = "https://vpn.mylumina.ru:2096"
+
     @property
     def db_path(self) -> Path:
         """Путь к файлу базы данных."""

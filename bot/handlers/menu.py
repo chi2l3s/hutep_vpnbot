@@ -150,6 +150,7 @@ async def vpn_show_profile(callback: CallbackQuery) -> None:
     async with session_maker() as session:
         from bot.db.models import VPNProfile
         from sqlalchemy import select
+        from bot.config import settings
 
         subscription = await session.get(Subscription, callback.from_user.id)
 
@@ -160,61 +161,50 @@ async def vpn_show_profile(callback: CallbackQuery) -> None:
                 pass
             return
 
-        stmt = select(VPNProfile).where(
-            VPNProfile.user_id == callback.from_user.id,
-            VPNProfile.is_active == True,
+        # Генерируем subscription URL
+        sub_code = f"hv_{callback.from_user.id}"
+        sub_url = f"{settings.subscription_domain}/sub/{sub_code}"
+
+        text = (
+            "🔐 <b>Ваш VPN профиль</b>\n\n"
+            f"⚙️ Протокол: <b>VLESS + Reality</b>\n"
+            f"🖥 Сервер: <b>HutepVPN</b>\n"
+            f"📋 Статус: <b>Активен ✅</b>\n\n"
+            f"📱 <b>Ссылка для подключения:</b>\n"
+            f"<code>{sub_url}</code>\n\n"
+            "📋 <b>Инструкция для Android (Happ):</b>\n"
+            "1️⃣ Установите <b>Happ</b> из Google Play\n"
+            "2️⃣ Нажмите + → <b>Подписка (Subscription)</b>\n"
+            "3️⃣ Вставьте ссылку выше\n"
+            "4️⃣ Нажмите <b>ОК</b> и подключитесь\n\n"
+            "⚠️ Ссылка действительна только при активной подписке!"
         )
-        result = await session.execute(stmt)
-        profile = result.scalar_one_or_none()
-
-        if not profile:
-            from bot.services.vpn_service import get_vpn_service
-            vpn_service = get_vpn_service()
-            user = await session.get(User, callback.from_user.id)
-            if user:
-                try:
-                    profile = await vpn_service.get_or_create_profile(session, user)
-                    await session.commit()
-                except Exception as e:
-                    try:
-                        await callback.message.answer(f"😔 Ошибка: {e}")
-                    except Exception:
-                        pass
-                    return
-
-        if profile:
-            text = (
-                "🔐 <b>Ваш VPN профиль</b>\n\n"
-                f"⚙️ Протокол: <b>VLESS</b>\n"
-                f"🖥 Сервер: <b>HutepVPN</b>\n"
-                f"📋 Статус: <b>Активен ✅</b>\n\n"
-                f"🔗 <b>Ссылка для подключения:</b>\n"
-                f"<code>{profile.profile_link}</code>\n\n"
-                "📱 Скопируйте ссылку и вставьте в приложение VLESS."
-            )
-            try:
-                await callback.message.answer(text, parse_mode="HTML")
-            except Exception:
-                pass
+        try:
+            await callback.message.answer(text, parse_mode="HTML")
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "vpn_instructions")
 async def vpn_instructions(callback: CallbackQuery) -> None:
     """Инструкция по подключению."""
     text = (
-        "📖 <b>Инструкция по подключению</b>\n\n"
-        "1️⃣ <b>Скачайте клиент:</b>\n"
-        "• Android: v2rayNG (Google Play)\n"
-        "• iOS: Streisand, FoXray (App Store)\n"
-        "• Windows: v2rayN (GitHub)\n"
-        "• macOS: V2rayU (Homebrew)\n\n"
-        "2️⃣ <b>Импортируйте конфиг:</b>\n"
-        "• Скопируйте VLESS-ссылку\n"
-        "• Вставьте ссылку в клиент\n\n"
+        "📖 <b>Инструкция по подключению (Android — Happ)</b>\n\n"
+        "1️⃣ <b>Установите Happ:</b>\n"
+        "• Скачайте из Google Play или f-droid\n\n"
+        "2️⃣ <b>Добавьте подписку:</b>\n"
+        "• Нажмите + на главном экране\n"
+        "• Выберите <b>Подписка (Subscription)</b>\n"
+        "• Вставьте вашу ссылку вида:\n"
+        "<code>https://vpn.mylumina.ru:2096/sub/...</code>\n"
+        "• Нажмите ОК\n\n"
         "3️⃣ <b>Подключитесь:</b>\n"
-        "• Выберите сервер\n"
-        "• Нажмите кнопку подключения\n\n"
-        "⚠️ <b>Важно:</b> Ссылка действительна только при активной подписке!"
+        "• Выберите добавленную подписку\n"
+        "• Нажмите кнопку подключения (▶)\n\n"
+        "4️⃣ <b>Разрешите VPN:</b>\n"
+        "• При запросе нажмите ОК\n\n"
+        "⚠️ <b>Важно:</b> Ссылка действительна только при активной подписке!\n"
+        "💡 При проблемах напишите @HutepVPNSupport"
     )
     try:
         await callback.message.edit_text(
