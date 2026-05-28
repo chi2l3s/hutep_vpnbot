@@ -48,6 +48,7 @@ class Settings(BaseSettings):
 
     # === VPN Subscription ===
     subscription_domain: str = "https://vpn.mylumina.ru:2096"
+    xui_inbound_id: int = 1
 
     @property
     def db_path(self) -> Path:

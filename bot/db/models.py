@@ -111,7 +111,7 @@ class Payment(Base):
 
 
 class VPNProfile(Base):
-    """VPN профиль пользователя."""
+    """VPN профиль пользоваанта."""
 
     __tablename__ = "vpn_profiles"
 
@@ -119,6 +119,7 @@ class VPNProfile(Base):
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), nullable=False)
     protocol: Mapped[str] = mapped_column(String(20), nullable=False)
     profile_uuid: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    sub_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     profile_link: Mapped[str] = mapped_column(Text, nullable=False)
     server_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -161,28 +161,43 @@ async def vpn_show_profile(callback: CallbackQuery) -> None:
                 pass
             return
 
-        # Генерируем subscription URL
-        sub_code = f"hv_{callback.from_user.id}"
-        sub_url = f"{settings.subscription_domain}/sub/{sub_code}"
+        # Получаем или создаём VPN профиль
+        from bot.services.vpn_service import get_vpn_service
+        vpn_service = get_vpn_service()
+        user_obj = await session.get(User, callback.from_user.id)
+        profile = None
+        if user_obj:
+            try:
+                profile = await vpn_service.get_or_create_profile(session, user_obj)
+                await session.commit()
+            except Exception as e:
+                try:
+                    await callback.message.answer(f"😔 Ошибка: {e}")
+                except Exception:
+                    pass
+                return
 
-        text = (
-            "🔐 <b>Ваш VPN профиль</b>\n\n"
-            f"⚙️ Протокол: <b>VLESS + Reality</b>\n"
-            f"🖥 Сервер: <b>HutepVPN</b>\n"
-            f"📋 Статус: <b>Активен ✅</b>\n\n"
-            f"📱 <b>Ссылка для подключения:</b>\n"
-            f"<code>{sub_url}</code>\n\n"
-            "📋 <b>Инструкция для Android (Happ):</b>\n"
-            "1️⃣ Установите <b>Happ</b> из Google Play\n"
-            "2️⃣ Нажмите + → <b>Подписка (Subscription)</b>\n"
-            "3️⃣ Вставьте ссылку выше\n"
-            "4️⃣ Нажмите <b>ОК</b> и подключитесь\n\n"
-            "⚠️ Ссылка действительна только при активной подписке!"
-        )
-        try:
-            await callback.message.answer(text, parse_mode="HTML")
-        except Exception:
-            pass
+        if profile and profile.profile_link:
+            sub_url = profile.profile_link
+
+            text = (
+                "🔐 <b>Ваш VPN профиль</b>\n\n"
+                f"⚙️ Протокол: <b>VLESS + Reality</b>\n"
+                f"🖥 Сервер: <b>HutepVPN</b>\n"
+                f"📋 Статус: <b>Активен ✅</b>\n\n"
+                f"📱 <b>Ссылка для подключения:</b>\n"
+                f"<code>{sub_url}</code>\n\n"
+                "📋 <b>Инструкция для Android (Happ):</b>\n"
+                "1️⃣ Установите <b>Happ</b> из Google Play\n"
+                "2️⃣ Нажмите + → <b>Подписка (Subscription)</b>\n"
+                "3️⃣ Вставьте ссылку выше\n"
+                "4️⃣ Нажмите <b>ОК</b> и подключитесь\n\n"
+                "⚠️ Ссылка действительна только при активной подписке!"
+            )
+            try:
+                await callback.message.answer(text, parse_mode="HTML")
+            except Exception:
+                pass
 
 
 @router.callback_query(F.data == "vpn_instructions")

@@ -50,23 +50,21 @@ class VPNService:
         try:
             client_data = await self.xui.create_client(
                 email=str(user.id),
-                inbound_id=inbound_id,
+                inbound_id=settings.xui_inbound_id,
             )
 
             if not client_data:
                 raise VPNServiceError("Failed to create client in X-UI")
 
             profile_uuid = client_data.get("id", str(uuid.uuid4()))
-            profile_link = await self.xui.generate_vless_link(
-                client_uuid=profile_uuid,
-                server_host=self.xui.base_url.replace("http://", "").replace("https://", ""),
-                server_port=443,
-            )
+            sub_id = client_data.get("subId", "")
+            profile_link = f"{settings.subscription_domain}/sub/{sub_id}"
 
             profile = VPNProfile(
                 user_id=user.id,
                 protocol="vless",
                 profile_uuid=str(profile_uuid),
+                sub_id=str(sub_id) if sub_id else None,
                 profile_link=profile_link,
                 server_name="HutepVPN Server",
                 is_active=True,
