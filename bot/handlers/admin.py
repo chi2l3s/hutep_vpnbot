@@ -138,12 +138,14 @@ async def admin_confirm_give(callback: CallbackQuery) -> None:
             await callback.message.answer(f"❌ Пользователь {user_id} не найден.")
             return
 
-        # Создаём подписку в БД
+        # Создаём подписку в БД (UPDATE если уже есть, INSERT если нет)
         sub = await session.get(Subscription, user_id)
 
-        if sub and sub.is_valid:
-            sub.end_date = extend_subscription(sub.end_date, days)
-            sub.days += days
+        if sub:
+            sub.days = days
+            sub.start_date = days_from_now(0)
+            sub.end_date = days_from_now(days)
+            sub.is_active = True
         else:
             sub = Subscription(
                 user_id=user_id,
