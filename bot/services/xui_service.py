@@ -1,6 +1,8 @@
 """Сервис для работы с X-UI панелью."""
 
+import json
 import logging
+import uuid
 from typing import Any
 
 import aiohttp
@@ -65,7 +67,7 @@ class XUIService:
             logger.error(f"Failed to get inbounds: {e}")
             return []
 
-    async def get_inbound_info(self, inbound_id: int = 1) -> dict[str, Any] | None:
+    async def get_inbound_info(self, inbound_id: int) -> dict[str, Any] | None:
         """Получение информации о входящем подключении."""
         try:
             result = await self._request("GET", f"/xui/inbounds/{inbound_id}")
@@ -76,56 +78,61 @@ class XUIService:
     async def create_client(
         self,
         email: str,
-        inbound_id: int = 1,
+        inbound_id: int,
+        tg_id: int | None = None,
         enable: bool = True,
         flow: str = "xtls-rprx-vision",
+        expiry_time: int = 0,
+        total_gb: int = 0,
     ) -> dict[str, Any] | None:
-        """
-        Создание нового VPN-клиента.
+        """Создание нового VPN-клиента в X-UI.
 
-        :param email: Email/идентификатор клиента (используем Telegram ID)
-        :param inbound_id: ID входящего подключения
-        :param enable: Включить ли клиента
-        :param flow: Тип протокола (VLESS)
-        :return: Данные созданного клиента
+        API: POST /xui/inbounds/{id}/clients
+        Body: email, id (uuid), tgId, enable, flow, totalGB, expiryTime, inboundIds
         """
+        client_uuid = str(uuid.uuid4())
         client_data = {
-            "enable": enable,
             "email": email,
+            "id": client_uuid,
+            "tgId": tg_id or 0,
+            "enable": enable,
             "flow": flow,
-            "limitIp": 0,
-            "totalGB": 0,
-            "expiryTime": 0,
-            "listen": "",
-            "protocol": "vless",
-            "settings": '{"clients": []}',
+            "totalGB": total_gb,
+            "expiryTime": expiry_time,
+            "subId": email,
         }
-
         try:
             result = await self._request(
                 "POST",
                 f"/xui/inbounds/{inbound_id}/clients",
-                data=client_data,
+                data={"id": client_uuid, "email": email, "tgId": tg_id or 0,
+                      "enable": enable, "flow": flow, "totalGB": total_gb,
+                      "expiryTime": expiry_time, "subId": email, "inboundIds": [inbound_id]},
             )
             return result.get("obj")
         except XUIServiceError as e:
             logger.error(f"Failed to create client: {e}")
             return None
 
-    async def get_clients(self, inbound_id: int = 1) -> list[dict[str, Any]]:
-        """Получение списка клиентов для входящего подключения."""
+    async def get_client_by_email(self, email: str, inbound_id: int) -> dict[str, Any] | None:
+        """Поиск клиента по email в inbound."""
         try:
             inbound = await self.get_inbound_info(inbound_id)
             if inbound:
                 settings_data = inbound.get("settings", "{}")
-                import json
-                settings = json.loads(settings_data)
-                return settings.get("clients", [])
-            return []
+                s = json.loads(settings_data) if isinstance(settings_data, str) else settings_data
+                for client in s.get("clients", []):
+                    if client.get("email") == email:
+                        return client
+            return None
         except Exception:
-            return []
+            return None
 
-    async def delete_client(self, email: str, inbound_id: int = 1) -> bool:
+    async def find_client(self, email: str, inbound_id: int) -> dict[str, Any] | None:
+        """Поиск клиента по email."""
+        return await self.get_client_by_email(email, inbound_id)
+
+    async def delete_client(self, email: str, inbound_id: int) -> bool:
         """Удаление клиента по email."""
         try:
             await self._request(
@@ -137,59 +144,39 @@ class XUIService:
         except XUIServiceError:
             return False
 
-    async def find_client(self, email: str, inbound_id: int = 1) -> dict[str, Any] | None:
-        """Поиск клиента по email (Telegram ID)."""
-        clients = await self.get_clients(inbound_id)
-        for client in clients:
-            if client.get("email") == str(email):
-                return client
-        return None
+    def generate_subscription_url(self, sub_id: str) -> str:
+        """Генерация subscription URL."""
+        return f"{settings.subscription_domain}/sub/{sub_id}"
 
-    async def generate_vless_link(
+    async def get_or_create_client(
         self,
-        client_uuid: str,
-        server_host: str,
-        server_port: int,
-        flow: str = "xtls-rprx-vision",
-    ) -> str:
-        """
-        Генерация VLESS-ссылки для подключения.
-
-        :param client_uuid: UUID клиента
-        :param server_host: Хост сервера
-        :param server_port: Порт сервера
-        :param flow: Тип потока
-        :return: VLESS-ссылка
-        """
-        return f"vless://{client_uuid}@{server_host}:{server_port}?flow={flow}#{server_host}"
-
-    async def get_or_create_client(self, telegram_id: int) -> dict[str, Any] | None:
-        """
-        Получить существующего клиента или создать нового.
-
-        :param telegram_id: Telegram ID пользователя
-        :return: Данные клиента или None
-        """
+        telegram_id: int,
+        inbound_id: int = 1,
+        expiry_time: int = 0,
+    ) -> dict[str, Any] | None:
+        """Получить существующего клиента или создать нового."""
         email = str(telegram_id)
 
-        # Проверяем, существует ли клиент
-        existing = await self.find_client(email)
+        existing = await self.find_client(email, inbound_id)
         if existing:
             return existing
 
-        # Создаём нового клиента
-        return await self.create_client(email)
+        return await self.create_client(
+            email=email,
+            inbound_id=inbound_id,
+            tg_id=telegram_id,
+            expiry_time=expiry_time,
+        )
 
     async def check_connection(self) -> bool:
         """Проверка соединения с X-UI API."""
         try:
-            inbounds = await self.get_inbounds()
+            await self.get_inbounds()
             return True
         except Exception:
             return False
 
 
-# Глобальный экземпляр сервиса
 _xui_service: XUIService | None = None
 
 

@@ -123,7 +123,7 @@ async def admin_user_actions(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("admin_confirm_"))
 async def admin_confirm_give(callback: CallbackQuery) -> None:
-    """Выдача подписки."""
+    """Выдача подписки + создание клиента в X-UI."""
     if not is_admin(callback.from_user.id):
         return
 
@@ -138,6 +138,7 @@ async def admin_confirm_give(callback: CallbackQuery) -> None:
             await callback.message.answer(f"❌ Пользователь {user_id} не найден.")
             return
 
+        # Создаём подписку в БД
         sub = await session.get(Subscription, user_id)
 
         if sub and sub.is_valid:
@@ -155,13 +156,29 @@ async def admin_confirm_give(callback: CallbackQuery) -> None:
 
         await session.commit()
 
-        await callback.message.answer(
-            f"✅ <b>Подписка выдана!</b>\n\n"
-            f"👤 {user.full_name}\n"
-            f"🆔 <code>{user_id}</code>\n"
-            f"📅 +{days} дней",
-            parse_mode="HTML"
-        )
+    # Создаём клиента в X-UI
+    from bot.services.xui_service import get_xui_service
+    xui = get_xui_service()
+
+    try:
+        client = await xui.get_or_create_client(user_id)
+        if client:
+            sub_id = client.get("subId", str(user_id))
+            sub_url = xui.generate_subscription_url(sub_id)
+            xui_result = f"\n\n🔗 <b>VPN:</b> <code>{sub_url}</code>"
+        else:
+            xui_result = "\n\n⚠️ VPN-клиент не создан (X-UI недоступен)"
+    except Exception as e:
+        logger.error(f"X-UI error: {e}")
+        xui_result = "\n\n⚠️ VPN-клиент не создан (ошибка X-UI)"
+
+    await callback.message.answer(
+        f"✅ <b>Подписка выдана!</b>\n\n"
+        f"👤 {user.full_name}\n"
+        f"🆔 <code>{user_id}</code>\n"
+        f"📅 +{days} дней{xui_result}",
+        parse_mode="HTML"
+    )
 
 
 @router.callback_query(F.data == "admin_stats")
