@@ -28,13 +28,22 @@ async def ensure_user_exists(message: Message) -> User | None:
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
 
-        if not user:
-            referrer = None
-            if message.text and len(message.text.split()) > 1:
-                ref_code = message.text.split()[1]
-                referral_svc = get_referral_service()
-                referrer = await referral_svc.get_user_by_referral_code(session, ref_code)
+        if user:
+            # Обновляем данные если изменились
+            if user.username != message.from_user.username or user.full_name != message.from_user.full_name:
+                user.username = message.from_user.username
+                user.full_name = message.from_user.full_name
+                await session.commit()
+            return user
 
+        # Создаём нового пользователя
+        referrer = None
+        if message.text and len(message.text.split()) > 1:
+            ref_code = message.text.split()[1]
+            referral_svc = get_referral_service()
+            referrer = await referral_svc.get_user_by_referral_code(session, ref_code)
+
+        try:
             user = User(
                 id=user_id,
                 username=message.from_user.username,
@@ -45,8 +54,12 @@ async def ensure_user_exists(message: Message) -> User | None:
             session.add(user)
             await session.commit()
             await session.refresh(user)
-
-        return user
+            return user
+        except Exception:
+            # Пользователь уже существует (race condition)
+            await session.rollback()
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
 
 
 @router.message(CommandStart())
