@@ -196,23 +196,34 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_admin_give_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура выбора дней для выдачи подписки."""
+def get_admin_users_keyboard() -> InlineKeyboardMarkup:
+    """Пустая клавиатура - пользователи загружаются в хендлере."""
+    return InlineKeyboardBuilder().as_markup()
+
+
+def get_admin_user_actions_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура действий с пользователем."""
     builder = InlineKeyboardBuilder()
     for days in [30, 90, 180, 360]:
         builder.row(InlineKeyboardButton(
-            text=f"{days} дней — {settings.subscription_plans.get(days, {}).get('price', '?')}₽",
-            callback_data=f"admin_select_user_{days}"
+            text=f"🎁 Выдать {days} дней",
+            callback_data=f"admin_confirm_{user_id}_{days}"
         ))
+    builder.row(
+        InlineKeyboardButton(text="🔙 Назад", callback_data="admin_users")
+    )
     return builder.as_markup()
 
 
-def admin_users_list_keyboard(users) -> InlineKeyboardMarkup:
-    """Клавиатура со списком пользователей для админа."""
+def get_admin_days_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Клавиатура выбора дней для выдачи."""
     builder = InlineKeyboardBuilder()
-    for user in users[:20]:  # Лимит 20 пользователей
+    for days in [30, 90, 180, 360]:
         builder.row(InlineKeyboardButton(
-            text=f"👤 {user.full_name} ({user.id})",
-            callback_data=f"admin_user_{user.id}"
+            text=f"🎁 {days} дней — {settings.subscription_plans.get(days, {}).get('price', '?')}₽",
+            callback_data=f"admin_confirm_{user_id}_{days}"
         ))
+    builder.row(
+        InlineKeyboardButton(text="🔙 Назад", callback_data=f"admin_user_{user_id}")
+    )
     return builder.as_markup()

@@ -5,9 +5,12 @@ from aiogram.types import Message, CallbackQuery
 
 from bot.config import settings
 from bot.db.models import User, Subscription, get_session_maker
-from bot.utils.date_utils import days_from_now, format_date
+from bot.utils.date_utils import days_from_now, extend_subscription, format_date
 
 router = Router(name="admin")
+
+# Храним выбор админа в памяти (для простоты)
+_admin_state = {}
 
 
 def is_admin(user_id: int) -> bool:
@@ -24,11 +27,7 @@ async def admin_panel(callback: CallbackQuery) -> None:
 
     text = (
         "👨‍💻 <b>Админ-панель HutepVPN</b>\n\n"
-        "🛠 <b>Управление:</b>\n"
-        "• Просмотр пользователей\n"
-        "• Выдача подписки без оплаты\n"
-        "• Статистика\n\n"
-        "Выберите действие:"
+        "🛠 Выберите действие:"
     )
 
     from bot.keyboards.inline import get_admin_keyboard
@@ -49,63 +48,162 @@ async def admin_panel(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "admin_users")
 async def admin_users(callback: CallbackQuery) -> None:
-    """Список пользователей."""
+    """Список последних пользователей."""
     if not is_admin(callback.from_user.id):
         return
 
     session_maker = get_session_maker()
     async with session_maker() as session:
         from sqlalchemy import select, func
-        from bot.db.models import User, Subscription
 
-        # Количество пользователей
-        count_result = await session.execute(select(func.count(User.id)))
-        total_users = count_result.scalar() or 0
-
-        # Количество подписок
-        sub_result = await session.execute(
+        # Общая статистика
+        total_users = (await session.execute(select(func.count(User.id)))).scalar() or 0
+        active_subs = (await session.execute(
             select(func.count(Subscription.id)).where(Subscription.is_active == True)
-        )
-        active_subs = sub_result.scalar() or 0
+        )).scalar() or 0
+
+        # Последние 10 пользователей
+        users = (await session.execute(
+            select(User).order_by(User.created_at.desc()).limit(10)
+        )).scalars().all()
 
         text = (
-            "👥 <b>Пользователи</b>\n\n"
-            f"📊 <b>Всего:</b> {total_users}\n"
-            f"✅ <b>Активных подписок:</b> {active_subs}\n"
-            f"❌ <b>Без подписки:</b> {total_users - active_subs}\n\n"
-            "💡 Используйте /admin_give для выдачи подписки"
+            f"👥 <b>Статистика</b>\n"
+            f"📊 Всего: {total_users}\n"
+            f"✅ Подписок: {active_subs}\n\n"
+            f"<b>Последние пользователи:</b>\n"
         )
+
+        for user in users:
+            sub = await session.get(Subscription, user.id)
+            sub_text = "✅ Активна" if sub and sub.is_valid else "❌ Нет"
+            days = sub.days_remaining if sub and sub.is_valid else 0
+            text += f"\n👤 {user.full_name}\n"
+            text += f"   🆔 {user.id} | 📅 {sub_text} ({days} дн.)\n"
+
+    from bot.keyboards.inline import get_admin_users_keyboard
 
     try:
         await callback.message.edit_text(
             text,
+            reply_markup=get_admin_users_keyboard(),
             parse_mode="HTML"
         )
     except Exception:
         await callback.message.answer(text, parse_mode="HTML")
 
 
-@router.callback_query(F.data == "admin_give")
-async def admin_give(callback: CallbackQuery) -> None:
-    """Выдача подписки - показывает инструкцию."""
+@router.callback_query(F.data.startswith("admin_user_"))
+async def admin_user_actions(callback: CallbackQuery) -> None:
+    """Действия с конкретным пользователем."""
     if not is_admin(callback.from_user.id):
         return
 
-    text = (
-        "🎁 <b>Выдача подписки без оплаты</b>\n\n"
-        "📖 <b>Использование:</b>\n"
-        "Отправьте команду:\n"
-        "<code>/admin_give &lt;user_id&gt; &lt;days&gt;</code>\n\n"
-        "Пример: <code>/admin_give 123456789 30</code>\n\n"
-        "Где:\n"
-        "• <code>123456789</code> — Telegram ID пользователя\n"
-        "• <code>30</code> — количество дней (30/90/180/360)"
-    )
+    user_id = int(callback.data.split("_")[2])
+
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        user = await session.get(User, user_id)
+        if not user:
+            await callback.message.answer(f"❌ Пользователь {user_id} не найден.")
+            return
+
+        sub = await session.get(Subscription, user_id)
+
+        text = (
+            f"👤 <b>{user.full_name}</b>\n"
+            f"🆔 ID: <code>{user.id}</code>\n"
+            f"📅 Регистрация: {format_date(user.created_at)}\n"
+        )
+
+        if sub and sub.is_valid:
+            from bot.utils.date_utils import format_days_remaining
+            text += f"\n📊 <b>Подписка:</b>\n"
+            text += f"   📅 Осталось: {format_days_remaining(sub.days_remaining)}\n"
+            text += f"   📆 Истекает: {format_date(sub.end_date)}"
+        else:
+            text += f"\n🚫 <b>Нет активной подписки</b>"
+
+    from bot.keyboards.inline import get_admin_user_actions_keyboard
 
     try:
-        await callback.message.edit_text(text, parse_mode="HTML")
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_user_actions_keyboard(user_id),
+            parse_mode="HTML"
+        )
     except Exception:
         await callback.message.answer(text, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("admin_give_days_"))
+async def admin_select_days(callback: CallbackQuery) -> None:
+    """Выбор количества дней для выдачи."""
+    if not is_admin(callback.from_user.id):
+        return
+
+    user_id = int(callback.data.split("_")[3])
+
+    _admin_state[callback.from_user.id] = {"target_user": user_id}
+
+    text = (
+        f"🎁 <b>Выберите количество дней</b>\n\n"
+        f"🆔 Пользователь: <code>{user_id}</code>"
+    )
+
+    from bot.keyboards.inline import get_admin_days_keyboard
+
+    try:
+        await callback.message.edit_text(
+            text,
+            reply_markup=get_admin_days_keyboard(user_id),
+            parse_mode="HTML"
+        )
+    except Exception:
+        await callback.message.answer(text, parse_mode="HTML")
+
+
+@router.callback_query(F.data.startswith("admin_confirm_"))
+async def admin_confirm_give(callback: CallbackQuery) -> None:
+    """Подтверждение выдачи подписки."""
+    if not is_admin(callback.from_user.id):
+        return
+
+    parts = callback.data.split("_")
+    user_id = int(parts[2])
+    days = int(parts[3])
+
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        user = await session.get(User, user_id)
+        if not user:
+            await callback.message.answer(f"❌ Пользователь {user_id} не найден.")
+            return
+
+        sub = await session.get(Subscription, user_id)
+
+        if sub and sub.is_valid:
+            sub.end_date = extend_subscription(sub.end_date, days)
+            sub.days += days
+        else:
+            sub = Subscription(
+                user_id=user_id,
+                days=days,
+                start_date=days_from_now(0),
+                end_date=days_from_now(days),
+                is_active=True,
+            )
+            session.add(sub)
+
+        await session.commit()
+
+        await callback.message.answer(
+            f"✅ <b>Подписка выдана!</b>\n\n"
+            f"👤 {user.full_name}\n"
+            f"🆔 {user_id}\n"
+            f"📅 +{days} дней",
+            parse_mode="HTML"
+        )
 
 
 @router.callback_query(F.data == "admin_stats")
@@ -124,24 +222,47 @@ async def admin_stats(callback: CallbackQuery) -> None:
         )).scalar() or 0
 
         text = (
-            "📊 <b>Статистика HutepVPN</b>\n\n"
-            f"👥 Всего пользователей: <b>{total_users}</b>\n"
-            f"✅ Активных подписок: <b>{active_subs}</b>\n"
-            f"💰 Конверсия: <b>{(active_subs / total_users * 100) if total_users > 0 else 0:.1f}%</b>"
+            "📊 <b>Статистика</b>\n\n"
+            f"👥 Всего пользователей: {total_users}\n"
+            f"✅ Активных подписок: {active_subs}\n"
+            f"❌ Без подписок: {total_users - active_subs}\n"
+            f"💰 Конверсия: {(active_subs / total_users * 100) if total_users > 0 else 0:.1f}%"
         )
 
     try:
-        await callback.message.edit_text(
-            text,
-            parse_mode="HTML"
-        )
+        await callback.message.edit_text(text, parse_mode="HTML")
     except Exception:
         await callback.message.answer(text, parse_mode="HTML")
 
 
 @router.message(F.text == "/admin_give")
+async def admin_give_info(message: Message) -> None:
+    """Команда /admin_give - информация."""
+    if not is_admin(message.from_user.id):
+        return
+
+    # Показываем список последних пользователей для быстрого выбора
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        users = (await session.execute(
+            select(User).order_by(User.created_at.desc()).limit(5)
+        )).scalars().all()
+
+        text = "🎁 <b>Выдача подписки</b>\n\nВыберите пользователя или введите:\n<code>/admin_give [id] [дни]</code>\n\n<b>Последние пользователи:</b>\n"
+
+        for user in users:
+            sub = await session.get(Subscription, user.id)
+            status = "✅" if sub and sub.is_valid else "❌"
+            text += f"\n{status} {user.full_name} ({user.id})"
+
+    from bot.keyboards.inline import get_admin_keyboard
+
+    await message.answer(text, parse_mode="HTML")
+
+
+@router.message(F.text.like("/admin_give %"))
 async def admin_give_command(message: Message) -> None:
-    """Команда выдачи подписки: /admin_give <user_id> <days>"""
+    """Выдача подписки: /admin_give <user_id> <days>"""
     if not is_admin(message.from_user.id):
         return
 
@@ -149,9 +270,8 @@ async def admin_give_command(message: Message) -> None:
     if len(parts) < 3:
         await message.answer(
             "📖 <b>Использование:</b>\n"
-            "<code>/admin_give &lt;user_id&gt; &lt;days&gt;</code>\n\n"
-            "Пример: <code>/admin_give 123456789 30</code>",
-            parse_mode="HTML"
+            "<code>/admin_give [id] [дни]</code>\n\n"
+            "Пример: <code>/admin_give 123456789 30</code>"
         )
         return
 
@@ -159,38 +279,40 @@ async def admin_give_command(message: Message) -> None:
         user_id = int(parts[1])
         days = int(parts[2])
     except ValueError:
-        await message.answer("❌ Неверный формат. Используйте: /admin_give &lt;user_id&gt; &lt;days&gt;")
+        await message.answer("❌ Неверный формат")
+        return
+
+    if days not in settings.subscription_plans:
+        await message.answer(f"❌ Доступные дни: {', '.join(map(str, settings.subscription_plans.keys()))}")
         return
 
     session_maker = get_session_maker()
     async with session_maker() as session:
         user = await session.get(User, user_id)
         if not user:
-            await message.answer(f"❌ Пользователь {user_id} не найден.")
+            await message.answer(f"❌ Пользователь {user_id} не найден")
             return
 
-        subscription = await session.get(Subscription, user_id)
+        sub = await session.get(Subscription, user_id)
 
-        if subscription and subscription.is_valid:
-            from bot.utils.date_utils import extend_subscription
-            subscription.end_date = extend_subscription(subscription.end_date, days)
-            subscription.days += days
+        if sub and sub.is_valid:
+            sub.end_date = extend_subscription(sub.end_date, days)
+            sub.days += days
         else:
-            subscription = Subscription(
+            sub = Subscription(
                 user_id=user_id,
                 days=days,
                 start_date=days_from_now(0),
                 end_date=days_from_now(days),
                 is_active=True,
             )
-            session.add(subscription)
+            session.add(sub)
 
         await session.commit()
 
         await message.answer(
             f"✅ <b>Подписка выдана!</b>\n\n"
-            f"👤 Пользователь: {user.full_name}\n"
-            f"🆔 ID: <code>{user_id}</code>\n"
-            f"📅 Дней добавлено: <b>{days}</b>",
+            f"👤 {user.full_name} ({user_id})\n"
+            f"📅 +{days} дней",
             parse_mode="HTML"
         )
