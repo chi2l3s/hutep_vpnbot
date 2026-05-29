@@ -5,12 +5,9 @@ from aiogram.types import Message, CallbackQuery
 
 from bot.config import settings
 from bot.db.models import User, Subscription, get_session_maker
-from bot.utils.date_utils import days_from_now, extend_subscription, format_date
+from bot.utils.date_utils import days_from_now, extend_subscription, format_date, format_days_remaining
 
 router = Router(name="admin")
-
-# Храним выбор админа в памяти (для простоты)
-_admin_state = {}
 
 
 def is_admin(user_id: int) -> bool:
@@ -25,30 +22,19 @@ async def admin_panel(callback: CallbackQuery) -> None:
         await callback.message.answer("⛔ У вас нет доступа к админ-панели.")
         return
 
-    text = (
-        "👨‍💻 <b>Админ-панель HutepVPN</b>\n\n"
-        "🛠 Выберите действие:"
-    )
+    text = "👨‍💻 <b>Админ-панель</b>\n\nВыберите действие:"
 
     from bot.keyboards.inline import get_admin_keyboard
 
     try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=get_admin_keyboard(),
-            parse_mode="HTML"
-        )
+        await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
     except Exception:
-        await callback.message.answer(
-            text,
-            reply_markup=get_admin_keyboard(),
-            parse_mode="HTML"
-        )
+        await callback.message.answer(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
 
 
 @router.callback_query(F.data == "admin_users")
 async def admin_users(callback: CallbackQuery) -> None:
-    """Список последних пользователей."""
+    """Список пользователей."""
     if not is_admin(callback.from_user.id):
         return
 
@@ -56,46 +42,40 @@ async def admin_users(callback: CallbackQuery) -> None:
     async with session_maker() as session:
         from sqlalchemy import select, func
 
-        # Общая статистика
         total_users = (await session.execute(select(func.count(User.id)))).scalar() or 0
         active_subs = (await session.execute(
             select(func.count(Subscription.id)).where(Subscription.is_active == True)
         )).scalar() or 0
 
-        # Последние 10 пользователей
         users = (await session.execute(
             select(User).order_by(User.created_at.desc()).limit(10)
         )).scalars().all()
 
         text = (
-            f"👥 <b>Статистика</b>\n"
-            f"📊 Всего: {total_users}\n"
-            f"✅ Подписок: {active_subs}\n\n"
-            f"<b>Последние пользователи:</b>\n"
+            f"👥 <b>Пользователи</b>\n\n"
+            f"📊 Всего: {total_users} | ✅ Подписок: {active_subs}\n\n"
+            f"<b>Нажмите на пользователя:</b>"
         )
 
-        for user in users:
-            sub = await session.get(Subscription, user.id)
-            sub_text = "✅ Активна" if sub and sub.is_valid else "❌ Нет"
-            days = sub.days_remaining if sub and sub.is_valid else 0
-            text += f"\n👤 {user.full_name}\n"
-            text += f"   🆔 {user.id} | 📅 {sub_text} ({days} дн.)\n"
+        from bot.keyboards.inline import get_admin_users_keyboard
 
-    from bot.keyboards.inline import get_admin_users_keyboard
-
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=get_admin_users_keyboard(),
-            parse_mode="HTML"
-        )
-    except Exception:
-        await callback.message.answer(text, parse_mode="HTML")
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=get_admin_users_keyboard(users),
+                parse_mode="HTML"
+            )
+        except Exception:
+            await callback.message.answer(
+                text,
+                reply_markup=get_admin_users_keyboard(users),
+                parse_mode="HTML"
+            )
 
 
 @router.callback_query(F.data.startswith("admin_user_"))
 async def admin_user_actions(callback: CallbackQuery) -> None:
-    """Действия с конкретным пользователем."""
+    """Карточка пользователя."""
     if not is_admin(callback.from_user.id):
         return
 
@@ -112,60 +92,38 @@ async def admin_user_actions(callback: CallbackQuery) -> None:
 
         text = (
             f"👤 <b>{user.full_name}</b>\n"
-            f"🆔 ID: <code>{user.id}</code>\n"
+            f"🆔 <code>{user.id}</code>\n"
             f"📅 Регистрация: {format_date(user.created_at)}\n"
         )
 
         if sub and sub.is_valid:
-            from bot.utils.date_utils import format_days_remaining
-            text += f"\n📊 <b>Подписка:</b>\n"
-            text += f"   📅 Осталось: {format_days_remaining(sub.days_remaining)}\n"
-            text += f"   📆 Истекает: {format_date(sub.end_date)}"
+            text += (
+                f"\n✅ <b>Подписка:</b>\n"
+                f"   📅 Осталось: {format_days_remaining(sub.days_remaining)}\n"
+                f"   📆 Истекает: {format_date(sub.end_date)}"
+            )
         else:
             text += f"\n🚫 <b>Нет активной подписки</b>"
 
-    from bot.keyboards.inline import get_admin_user_actions_keyboard
+        from bot.keyboards.inline import get_admin_user_actions_keyboard
 
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=get_admin_user_actions_keyboard(user_id),
-            parse_mode="HTML"
-        )
-    except Exception:
-        await callback.message.answer(text, parse_mode="HTML")
-
-
-@router.callback_query(F.data.startswith("admin_give_days_"))
-async def admin_select_days(callback: CallbackQuery) -> None:
-    """Выбор количества дней для выдачи."""
-    if not is_admin(callback.from_user.id):
-        return
-
-    user_id = int(callback.data.split("_")[3])
-
-    _admin_state[callback.from_user.id] = {"target_user": user_id}
-
-    text = (
-        f"🎁 <b>Выберите количество дней</b>\n\n"
-        f"🆔 Пользователь: <code>{user_id}</code>"
-    )
-
-    from bot.keyboards.inline import get_admin_days_keyboard
-
-    try:
-        await callback.message.edit_text(
-            text,
-            reply_markup=get_admin_days_keyboard(user_id),
-            parse_mode="HTML"
-        )
-    except Exception:
-        await callback.message.answer(text, parse_mode="HTML")
+        try:
+            await callback.message.edit_text(
+                text,
+                reply_markup=get_admin_user_actions_keyboard(user_id),
+                parse_mode="HTML"
+            )
+        except Exception:
+            await callback.message.answer(
+                text,
+                reply_markup=get_admin_user_actions_keyboard(user_id),
+                parse_mode="HTML"
+            )
 
 
 @router.callback_query(F.data.startswith("admin_confirm_"))
 async def admin_confirm_give(callback: CallbackQuery) -> None:
-    """Подтверждение выдачи подписки."""
+    """Выдача подписки."""
     if not is_admin(callback.from_user.id):
         return
 
@@ -200,7 +158,7 @@ async def admin_confirm_give(callback: CallbackQuery) -> None:
         await callback.message.answer(
             f"✅ <b>Подписка выдана!</b>\n\n"
             f"👤 {user.full_name}\n"
-            f"🆔 {user_id}\n"
+            f"🆔 <code>{user_id}</code>\n"
             f"📅 +{days} дней",
             parse_mode="HTML"
         )
@@ -208,7 +166,7 @@ async def admin_confirm_give(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "admin_stats")
 async def admin_stats(callback: CallbackQuery) -> None:
-    """Статистика бота."""
+    """Статистика."""
     if not is_admin(callback.from_user.id):
         return
 
@@ -221,48 +179,27 @@ async def admin_stats(callback: CallbackQuery) -> None:
             select(func.count(Subscription.id)).where(Subscription.is_active == True)
         )).scalar() or 0
 
+        conv = (active_subs / total_users * 100) if total_users > 0 else 0
+
         text = (
             "📊 <b>Статистика</b>\n\n"
-            f"👥 Всего пользователей: {total_users}\n"
-            f"✅ Активных подписок: {active_subs}\n"
-            f"❌ Без подписок: {total_users - active_subs}\n"
-            f"💰 Конверсия: {(active_subs / total_users * 100) if total_users > 0 else 0:.1f}%"
+            f"👥 Всего пользователей: <b>{total_users}</b>\n"
+            f"✅ Активных подписок: <b>{active_subs}</b>\n"
+            f"❌ Без подписок: <b>{total_users - active_subs}</b>\n"
+            f"💰 Конверсия: <b>{conv:.1f}%</b>"
         )
 
-    try:
-        await callback.message.edit_text(text, parse_mode="HTML")
-    except Exception:
-        await callback.message.answer(text, parse_mode="HTML")
+        from bot.keyboards.inline import get_admin_keyboard
 
-
-@router.message(F.text == "/admin_give")
-async def admin_give_info(message: Message) -> None:
-    """Команда /admin_give - информация."""
-    if not is_admin(message.from_user.id):
-        return
-
-    # Показываем список последних пользователей для быстрого выбора
-    session_maker = get_session_maker()
-    async with session_maker() as session:
-        users = (await session.execute(
-            select(User).order_by(User.created_at.desc()).limit(5)
-        )).scalars().all()
-
-        text = "🎁 <b>Выдача подписки</b>\n\nВыберите пользователя или введите:\n<code>/admin_give [id] [дни]</code>\n\n<b>Последние пользователи:</b>\n"
-
-        for user in users:
-            sub = await session.get(Subscription, user.id)
-            status = "✅" if sub and sub.is_valid else "❌"
-            text += f"\n{status} {user.full_name} ({user.id})"
-
-    from bot.keyboards.inline import get_admin_keyboard
-
-    await message.answer(text, parse_mode="HTML")
+        try:
+            await callback.message.edit_text(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
+        except Exception:
+            await callback.message.answer(text, reply_markup=get_admin_keyboard(), parse_mode="HTML")
 
 
 @router.message(F.text.like("/admin_give %"))
-async def admin_give_command(message: Message) -> None:
-    """Выдача подписки: /admin_give <user_id> <days>"""
+async def admin_give_cmd(message: Message) -> None:
+    """Команда /admin_give <user_id> <days>"""
     if not is_admin(message.from_user.id):
         return
 
@@ -283,7 +220,9 @@ async def admin_give_command(message: Message) -> None:
         return
 
     if days not in settings.subscription_plans:
-        await message.answer(f"❌ Доступные дни: {', '.join(map(str, settings.subscription_plans.keys()))}")
+        await message.answer(
+            f"❌ Доступные дни: {', '.join(map(str, settings.subscription_plans.keys()))}"
+        )
         return
 
     session_maker = get_session_maker()
@@ -312,7 +251,8 @@ async def admin_give_command(message: Message) -> None:
 
         await message.answer(
             f"✅ <b>Подписка выдана!</b>\n\n"
-            f"👤 {user.full_name} ({user_id})\n"
+            f"👤 {user.full_name}\n"
+            f"🆔 <code>{user_id}</code>\n"
             f"📅 +{days} дней",
             parse_mode="HTML"
         )

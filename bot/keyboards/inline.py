@@ -196,9 +196,18 @@ def get_admin_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def get_admin_users_keyboard() -> InlineKeyboardMarkup:
-    """Пустая клавиатура - пользователи загружаются в хендлере."""
-    return InlineKeyboardBuilder().as_markup()
+def get_admin_users_keyboard(users) -> InlineKeyboardMarkup:
+    """Клавиатура списка пользователей."""
+    builder = InlineKeyboardBuilder()
+    for user in users[:10]:
+        builder.row(InlineKeyboardButton(
+            text=f"👤 {user.full_name} ({user.id})",
+            callback_data=f"admin_user_{user.id}"
+        ))
+    builder.row(
+        InlineKeyboardButton(text="🔙 Назад", callback_data="admin_panel")
+    )
+    return builder.as_markup()
 
 
 def get_admin_user_actions_keyboard(user_id: int) -> InlineKeyboardMarkup:
