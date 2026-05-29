@@ -9,8 +9,14 @@ from sqlalchemy import select
 from bot.db.models import User, get_session_maker
 from bot.services.referral_service import get_referral_service
 from bot.keyboards.inline import get_main_menu_inline_keyboard
+from bot.config import settings
 
 router = Router(name="start")
+
+
+def is_admin(user_id: int) -> bool:
+    """Проверка, является ли пользователь админом."""
+    return user_id in settings.admin_list
 
 
 async def ensure_user_exists(message: Message) -> User | None:
@@ -66,7 +72,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 
     await message.answer(
         welcome_text,
-        reply_markup=get_main_menu_inline_keyboard(),
+        reply_markup=get_main_menu_inline_keyboard(is_admin=is_admin(message.from_user.id)),
         parse_mode="HTML"
     )
 
@@ -75,15 +81,13 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 async def cmd_menu(message: Message, state: FSMContext) -> None:
     """Возврат в главное меню."""
     await state.clear()
-
     menu_text = (
         "📱 <b>Главное меню HutepVPN</b>\n\n"
         "Выберите действие:"
     )
-
     await message.answer(
         menu_text,
-        reply_markup=get_main_menu_inline_keyboard(),
+        reply_markup=get_main_menu_inline_keyboard(is_admin=is_admin(message.from_user.id)),
         parse_mode="HTML"
     )
 
@@ -96,13 +100,13 @@ async def back_to_main(callback: CallbackQuery, state: FSMContext) -> None:
     try:
         await callback.message.edit_text(
             text,
-            reply_markup=get_main_menu_inline_keyboard(),
+            reply_markup=get_main_menu_inline_keyboard(is_admin=is_admin(callback.from_user.id)),
             parse_mode="HTML"
         )
     except Exception:
         await callback.message.answer(
             text,
-            reply_markup=get_main_menu_inline_keyboard(),
+            reply_markup=get_main_menu_inline_keyboard(is_admin=is_admin(callback.from_user.id)),
             parse_mode="HTML"
         )
 

@@ -24,7 +24,7 @@ os.makedirs("data", exist_ok=True)
 from bot.config import settings
 from bot.db import init_db, close_db, get_session_maker
 from bot.db.models import Subscription
-from bot.handlers import start, menu, subscription, referral, payment
+from bot.handlers import start, menu, subscription, referral, payment, admin
 
 # Настройка логирования
 root_logger = logging.getLogger()
@@ -63,6 +63,7 @@ dp.include_routers(
     subscription.router,
     referral.router,
     payment.router,
+    admin.router,
 )
 print("Step 5: Routers included", flush=True)
 
