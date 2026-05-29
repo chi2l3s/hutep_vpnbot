@@ -47,8 +47,8 @@ class Settings(BaseSettings):
     proxy: str = ""
 
     # === VPN Subscription ===
-    subscription_domain: str = "https://vpn.mylumina.ru:2096"
-    xui_inbound_id: int = 1
+    xui_sub_base_url: str = "https://vpn.mylumina.ru:2096"
+    xui_sub_path: str = "/sub/"
 
     @property
     def db_path(self) -> Path:

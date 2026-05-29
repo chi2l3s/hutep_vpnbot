@@ -1,8 +1,6 @@
 """Сервис для работы с X-UI панелью."""
 
-import json
 import logging
-import uuid
 from typing import Any
 
 import aiohttp
@@ -23,17 +21,20 @@ class XUIService:
     def __init__(self) -> None:
         self.base_url = settings.xui_api_url.rstrip("/")
         self.api_key = settings.xui_api_key
-        self.use_tls = settings.xui_use_tls
 
     def _get_headers(self) -> dict:
-        """Заголовки для запросов к API."""
         return {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
 
-    async def _request(self, method: str, endpoint: str, data: dict | None = None) -> dict[str, Any]:
-        """Выполнение HTTP-запроса к X-UI API."""
+    async def _request(
+        self,
+        method: str,
+        endpoint: str,
+        data: dict | None = None,
+        params: dict | None = None,
+    ) -> dict[str, Any]:
         url = f"{self.base_url}{endpoint}"
         headers = self._get_headers()
 
@@ -43,14 +44,15 @@ class XUIService:
                     method=method,
                     url=url,
                     json=data,
+                    params=params,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as response:
                     result = await response.json()
 
                     if response.status >= 400:
-                        logger.error(f"X-UI API error: {response.status} - {result}")
-                        raise XUIServiceError(f"API error: {response.status}")
+                        logger.error(f"X-UI API error {response.status}: {result}")
+                        raise XUIServiceError(f"API error {response.status}")
 
                     return result
 
@@ -58,19 +60,56 @@ class XUIService:
             logger.error(f"X-UI connection error: {e}")
             raise XUIServiceError(f"Connection error: {e}")
 
+    # ─── Inbounds ───────────────────────────────────────────
+
     async def get_inbounds(self) -> list[dict[str, Any]]:
-        """Получение списка входящих подключений (inbounds)."""
+        """Список всех inbounds."""
         try:
-            result = await self._request("GET", "/xui/inbounds")
+            result = await self._request("GET", "/inbounds/list")
             return result.get("obj", [])
         except XUIServiceError as e:
             logger.error(f"Failed to get inbounds: {e}")
             return []
 
-    async def get_inbound_info(self, inbound_id: int) -> dict[str, Any] | None:
-        """Получение информации о входящем подключении."""
+    async def get_inbounds_options(self) -> list[dict[str, Any]]:
+        """Краткий список inbounds (id, remark, port, protocol)."""
         try:
-            result = await self._request("GET", f"/xui/inbounds/{inbound_id}")
+            result = await self._request("GET", "/inbounds/options")
+            return result.get("obj", [])
+        except XUIServiceError:
+            return []
+
+    # ─── Clients ───────────────────────────────────────────
+
+    async def get_clients(self) -> list[dict[str, Any]]:
+        """Все клиенты с uuid, subId, traffic."""
+        try:
+            result = await self._request("GET", "/clients/list")
+            return result.get("obj", [])
+        except XUIServiceError as e:
+            logger.error(f"Failed to get clients: {e}")
+            return []
+
+    async def get_client_paged(
+        self,
+        page: int = 1,
+        page_size: int = 25,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        """Клиенты с пагинацией и поиском."""
+        params: dict[str, Any] = {"page": page, "pageSize": page_size}
+        if search:
+            params["search"] = search
+        try:
+            return await self._request("GET", "/clients/list/paged", params=params)
+        except XUIServiceError as e:
+            logger.error(f"Failed to get paged clients: {e}")
+            return {"obj": {"items": [], "total": 0, "filtered": 0}}
+
+    async def get_client(self, email: str) -> dict[str, Any] | None:
+        """Получить клиента по email (= subId = telegram_id)."""
+        try:
+            result = await self._request("GET", f"/clients/get/{email}")
             return result.get("obj")
         except XUIServiceError:
             return None
@@ -78,95 +117,99 @@ class XUIService:
     async def create_client(
         self,
         email: str,
-        inbound_id: int,
-        tg_id: int | None = None,
-        enable: bool = True,
-        flow: str = "xtls-rprx-vision",
+        inbound_ids: list[int],
+        tg_id: int = 0,
         expiry_time: int = 0,
         total_gb: int = 0,
     ) -> dict[str, Any] | None:
-        """Создание нового VPN-клиента в X-UI.
+        """Создать клиента.
 
-        API: POST /xui/inbounds/{id}/clients
-        Body: email, id (uuid), tgId, enable, flow, totalGB, expiryTime, inboundIds
+        POST /panel/api/clients/add
+        Body: {client: {email, tgId, expiryTime, totalGB, enable: true}, inboundIds: [id]}
         """
-        client_uuid = str(uuid.uuid4())
-        client_data = {
-            "email": email,
-            "id": client_uuid,
-            "tgId": tg_id or 0,
-            "enable": enable,
-            "flow": flow,
-            "totalGB": total_gb,
-            "expiryTime": expiry_time,
-            "subId": email,
+        body = {
+            "client": {
+                "email": email,
+                "tgId": tg_id,
+                "expiryTime": expiry_time,
+                "totalGB": total_gb,
+                "enable": True,
+            },
+            "inboundIds": inbound_ids,
         }
         try:
-            result = await self._request(
-                "POST",
-                f"/xui/inbounds/{inbound_id}/clients",
-                data={"id": client_uuid, "email": email, "tgId": tg_id or 0,
-                      "enable": enable, "flow": flow, "totalGB": total_gb,
-                      "expiryTime": expiry_time, "subId": email, "inboundIds": [inbound_id]},
-            )
+            result = await self._request("POST", "/clients/add", data=body)
+            if not result.get("success"):
+                logger.error(f"Create client failed: {result}")
+                return None
             return result.get("obj")
         except XUIServiceError as e:
             logger.error(f"Failed to create client: {e}")
             return None
 
-    async def get_client_by_email(self, email: str, inbound_id: int) -> dict[str, Any] | None:
-        """Поиск клиента по email в inbound."""
+    async def update_client(
+        self,
+        email: str,
+        expiry_time: int | None = None,
+        total_gb: int | None = None,
+        enable: bool | None = None,
+        tg_id: int | None = None,
+    ) -> bool:
+        """Обновить клиента. POST /clients/update/:email."""
+        body: dict[str, Any] = {"email": email}
+        if expiry_time is not None:
+            body["expiryTime"] = expiry_time
+        if total_gb is not None:
+            body["totalGB"] = total_gb
+        if enable is not None:
+            body["enable"] = enable
+        if tg_id is not None:
+            body["tgId"] = tg_id
         try:
-            inbound = await self.get_inbound_info(inbound_id)
-            if inbound:
-                settings_data = inbound.get("settings", "{}")
-                s = json.loads(settings_data) if isinstance(settings_data, str) else settings_data
-                for client in s.get("clients", []):
-                    if client.get("email") == email:
-                        return client
-            return None
-        except Exception:
-            return None
-
-    async def find_client(self, email: str, inbound_id: int) -> dict[str, Any] | None:
-        """Поиск клиента по email."""
-        return await self.get_client_by_email(email, inbound_id)
-
-    async def delete_client(self, email: str, inbound_id: int) -> bool:
-        """Удаление клиента по email."""
-        try:
-            await self._request(
-                "DELETE",
-                f"/xui/inbounds/{inbound_id}/clients",
-                data={"email": email}
-            )
-            return True
+            result = await self._request("POST", f"/clients/update/{email}", data=body)
+            return result.get("success", False)
         except XUIServiceError:
             return False
 
+    async def delete_client(self, email: str) -> bool:
+        """Удалить клиента. POST /clients/del/:email."""
+        try:
+            result = await self._request("POST", f"/clients/del/{email}")
+            return result.get("success", False)
+        except XUIServiceError:
+            return False
+
+    async def get_client_traffic(self, email: str) -> dict[str, Any] | None:
+        """Трафик клиента. GET /clients/traffic/:email."""
+        try:
+            result = await self._request("GET", f"/clients/traffic/{email}")
+            return result.get("obj")
+        except XUIServiceError:
+            return None
+
+    async def reset_client_traffic(self, email: str) -> bool:
+        """Сбросить трафик клиента. POST /clients/resetTraffic/:email."""
+        try:
+            result = await self._request("POST", f"/clients/resetTraffic/{email}")
+            return result.get("success", False)
+        except XUIServiceError:
+            return False
+
+    # ─── Subscription ─────────────────────────────────
+
     def generate_subscription_url(self, sub_id: str) -> str:
-        """Генерация subscription URL."""
-        return f"{settings.subscription_domain}/sub/{sub_id}"
+        """Subscription URL: https://vpn.mylumina.ru:2096/sub/{sub_id}"""
+        return f"{settings.xui_sub_base_url}{settings.xui_sub_path}{sub_id}"
 
-    async def get_or_create_client(
-        self,
-        telegram_id: int,
-        inbound_id: int = 1,
-        expiry_time: int = 0,
-    ) -> dict[str, Any] | None:
-        """Получить существующего клиента или создать нового."""
-        email = str(telegram_id)
+    # ─── Прочее ─────────────────────────────────────────
 
-        existing = await self.find_client(email, inbound_id)
-        if existing:
-            return existing
-
-        return await self.create_client(
-            email=email,
-            inbound_id=inbound_id,
-            tg_id=telegram_id,
-            expiry_time=expiry_time,
-        )
+    async def get_online_clients(self) -> list[str]:
+        """Список email клиентов онлайн. POST /clients/onlines."""
+        try:
+            result = await self._request("POST", "/clients/onlines")
+            return result.get("obj", [])
+        except XUIServiceError:
+            return []
 
     async def check_connection(self) -> bool:
         """Проверка соединения с X-UI API."""
@@ -181,7 +224,7 @@ _xui_service: XUIService | None = None
 
 
 def get_xui_service() -> XUIService:
-    """Получение экземпляра X-UI сервиса."""
+    """Получить экземпляр X-UI сервиса."""
     global _xui_service
     if _xui_service is None:
         _xui_service = XUIService()

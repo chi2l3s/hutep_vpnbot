@@ -1,0 +1,1 @@
+pytest>=7.0\npytest-asyncio>=0.21\nhttpx>=0.24
