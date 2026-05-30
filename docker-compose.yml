@@ -29,9 +29,6 @@ services:
       start_period: 10s
     networks:
       - hutepvpn_net
-    depends_on:
-      nginx:
-        condition: service_healthy
 
   nginx:
     image: nginx:1.27-alpine
@@ -48,7 +45,7 @@ services:
       # access logs
       - hutepvpn_logs:/var/log/nginx
     healthcheck:
-      test: ["CMD", "nginx", "-t"]
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
       interval: 30s
       timeout: 10s
       retries: 3
