@@ -3,6 +3,7 @@
 # HutepVPN Bot — Interactive Installer
 # One-command deployment for fresh VPS
 # Usage: ./scripts/install.sh
+#        curl -sSL https://.../install.sh | bash
 # ─────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -22,41 +23,49 @@ get_dc() {
 }
 DC=$(get_dc)
 
-prompt() {
-    local var="$1"
-    local label="$2"
-    local default="${3:-}"
-    local value
+# Pipe-safe read: перенаправляет stdin на /dev/tty если stdin не терминал
+pipe_read() {
+    local prompt_text="$1"
+    local var_name="$2"
+    local default_val="$3"
 
-    if [ -n "$default" ]; then
-        read -p "$(echo -e "${CYAN}${label}${NC} [$default]: ")" value
-        value="${value:-$default}"
-    else
-        read -p "$(echo -e "${CYAN}${label}${NC}: ")" value
+    # Если stdin не терминал — переключаемся на /dev/tty
+    if [ ! -t 0 ]; then
+        if [ -e /dev/tty ]; then
+            exec < /dev/tty
+        else
+            error "Interactive mode requires a terminal. Run: ./scripts/install.sh"
+        fi
     fi
-    export "$var=$value"
-}
 
-prompt_pass() {
-    local var="$1"
-    local label="$2"
-    local value
-    read -sp "$(echo -e "${CYAN}${label}${NC}: ")" value
-    echo
-    export "$var=$value"
-}
-
-yesno() {
-    local label="$1"
-    local default="${2:-n}"
-    local yn
-
-    if [ "$default" = "y" ]; then
-        read -p "$(echo -e "${CYAN}${label}${NC} [Y/n]: ")" yn
-        yn="${yn:-y}"
+    if [ -n "$default_val" ]; then
+        read -p "$(echo -e "${CYAN}${prompt_text}${NC} [${default_val}]: ")" value
+        : "${value:=$default_val}"
     else
-        read -p "$(echo -e "${CYAN}${label}${NC} [y/N]: ")" yn
-        yn="${yn:-n}"
+        read -p "$(echo -e "${CYAN}${prompt_text}${NC}: ")" value
+    fi
+
+    export "$var_name=$value"
+}
+
+pipe_yesno() {
+    local prompt_text="$1"
+    local default_val="$2"
+
+    if [ ! -t 0 ]; then
+        if [ -e /dev/tty ]; then
+            exec < /dev/tty
+        else
+            error "Interactive mode requires a terminal. Run: ./scripts/install.sh"
+        fi
+    fi
+
+    if [ "$default_val" = "y" ]; then
+        read -p "$(echo -e "${CYAN}${prompt_text}${NC} [Y/n]: ")" yn
+        : "${yn:=y}"
+    else
+        read -p "$(echo -e "${CYAN}${prompt_text}${NC} [y/N]: ")" yn
+        : "${yn:=n}"
     fi
 
     [ "$yn" = "y" ] || [ "$yn" = "Y" ]
@@ -90,7 +99,7 @@ stop_conflicts() {
 
     for svc in AdGuardHome apache2 nginx; do
         if systemctl is-active --quiet $svc 2>/dev/null; then
-            if yesno "$svc detected on port 80. Stop it?" "y"; then
+            if pipe_yesno "$svc detected on port 80. Stop it?" "y"; then
                 systemctl stop $svc 2>/dev/null || true
                 systemctl disable $svc 2>/dev/null || true
                 success "$svc stopped"
@@ -113,30 +122,30 @@ collect_settings() {
     echo
 
     echo -e "${YELLOW}=== Telegram ===${NC}"
-    prompt BOT_TOKEN "Telegram Bot Token (from @BotFather)"
+    pipe_read "Telegram Bot Token (from @BotFather)" BOT_TOKEN ""
 
     echo
     echo -e "${YELLOW}=== X-UI Panel ===${NC}"
-    prompt XUI_API_URL "X-UI URL (e.g. https://vpn.example.com:48291/cPQ3oKGCuGtngvqGOx/panel/api)"
-    prompt XUI_API_KEY "X-UI API Key (Settings → Security → API Token)"
+    pipe_read "X-UI URL (e.g. https://vpn.example.com:48291/.../panel/api)" XUI_API_URL ""
+    pipe_read "X-UI API Key (Settings -> Security -> API Token)" XUI_API_KEY ""
 
     IP=$(hostname -I 2>/dev/null | awk '{print $1}')
-    prompt XUI_SUB_BASE_URL "Subscription Base URL" "https://${IP}:2096"
+    pipe_read "Subscription Base URL" XUI_SUB_BASE_URL "https://${IP}:2096"
 
     echo
     echo -e "${YELLOW}=== Admin ===${NC}"
-    prompt ADMIN_IDS "Your Telegram ID (from @userinfobot)" ""
+    pipe_read "Your Telegram ID (from @userinfobot)" ADMIN_IDS ""
 
     echo
     echo -e "${YELLOW}=== NOWPayments (optional) ===${NC}"
-    prompt NOWPAYMENTS_API_KEY "NOWPayments API Key (leave empty to skip)" ""
+    pipe_read "NOWPayments API Key (leave empty to skip)" NOWPAYMENTS_API_KEY ""
 
     echo
     echo -e "${YELLOW}=== Domain / SSL ===${NC}"
-    prompt DOMAIN "Domain name (leave empty to skip SSL)" ""
+    pipe_read "Domain name (leave empty to skip SSL)" DOMAIN ""
 
     if [ -n "$DOMAIN" ]; then
-        prompt EMAIL "Email for Let's Encrypt" "admin@$DOMAIN"
+        pipe_read "Email for Let's Encrypt" EMAIL "admin@$DOMAIN"
         HAS_DOMAIN="yes"
     else
         HAS_DOMAIN="no"
@@ -267,12 +276,12 @@ main() {
     fi
 
     if [ -f .env ]; then
-        if yesno ".env already exists. Overwrite?" "n"; then
-            cp .env .env.backup.$(date +%Y%m%d%H%M%S)
+        if pipe_yesno ".env already exists. Overwrite?" "n"; then
+            cp .env ".env.backup.$(date +%Y%m%d%H%M%S)"
             info "Backup created"
         else
             info "Keeping existing .env"
-            if yesno "Build and start bot?" "y"; then
+            if pipe_yesno "Build and start bot?" "y"; then
                 check_docker
                 stop_conflicts
                 build_start
@@ -287,7 +296,7 @@ main() {
     generate_env
     setup_ssl
 
-    if yesno "Build and start bot now?" "y"; then
+    if pipe_yesno "Build and start bot now?" "y"; then
         build_start
     else
         success "Configuration saved to .env"
