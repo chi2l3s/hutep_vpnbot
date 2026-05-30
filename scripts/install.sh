@@ -269,11 +269,37 @@ main() {
     echo "╚══════════════════════════════════════════════════╝"
     echo -e "${NC}"
 
-    cd "$(dirname "$0")/.."
+    # Определить директорию проекта
+    PROJECT_DIR="/opt/hutep_vpnbot"
 
-    # Если запущен через pipe (curl | bash), $0 пустой — ищем проект
-    if [ ! -f docker-compose.yml ] && [ -d /opt/hutep_vpnbot ]; then
-        cd /opt/hutep_vpnbot
+    # Если запущен через pipe (curl | bash), $0 пустой — ищем/создаём проект
+    if [ ! -f docker-compose.yml ] || [ -z "$(ls -A bot/ 2>/dev/null)" ]; then
+        if [ -d "$PROJECT_DIR" ] && [ -f "$PROJECT_DIR/docker-compose.yml" ]; then
+            cd "$PROJECT_DIR"
+        else
+            if pipe_yesno "Project not found in $PROJECT_DIR. Clone from GitHub?" "y"; then
+                if [ -d "$PROJECT_DIR" ]; then
+                    warn "$PROJECT_DIR exists but incomplete. Remove and re-clone?"
+                    if pipe_yesno "Remove $PROJECT_DIR and re-clone?" "n"; then
+                        rm -rf "$PROJECT_DIR"
+                    else
+                        error "Cannot continue without a valid project. Remove $PROJECT_DIR manually or fix it."
+                    fi
+                fi
+
+                info "Cloning repository..."
+                REPO_URL="https://github.com/chi2l3s/hutep_vpnbot"
+                git clone "$REPO_URL" "$PROJECT_DIR" 2>/dev/null || {
+                    # Fallback: ручной ввод
+                    pipe_read "GitHub repository URL" REPO_URL "https://github.com/chi2l3s/hutep_vpnbot"
+                    git clone "$REPO_URL" "$PROJECT_DIR" || error "Failed to clone repository"
+                }
+                cd "$PROJECT_DIR"
+                success "Repository cloned to $PROJECT_DIR"
+            else
+                error "Project files required. Run: git clone https://github.com/chi2l3s/hutep_vpnbot"
+            fi
+        fi
     fi
 
     if [ ! -f docker-compose.yml ]; then
