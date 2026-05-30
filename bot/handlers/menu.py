@@ -200,6 +200,79 @@ async def vpn_show_profile(callback: CallbackQuery) -> None:
                 pass
 
 
+@router.callback_query(F.data == "vpn_regenerate")
+async def vpn_regenerate_profile(callback: CallbackQuery) -> None:
+    """Пересоздание VPN профиля."""
+    session_maker = get_session_maker()
+    async with session_maker() as session:
+        from bot.db.models import VPNProfile
+        from sqlalchemy import select
+
+        subscription = await session.get(Subscription, callback.from_user.id)
+
+        if not subscription or not subscription.is_valid:
+            try:
+                await callback.message.answer("😔 Сначала оформите подписку!")
+            except Exception:
+                pass
+            return
+
+        user_obj = await session.get(User, callback.from_user.id)
+        if not user_obj:
+            try:
+                await callback.message.answer("😕 Пользователь не найден.")
+            except Exception:
+                pass
+            return
+
+        from bot.services.xui_service import get_xui_service
+        from bot.services.vpn_service import VPNService, XUI_DEFAULT_INBOUND_ID
+        import uuid
+
+        xui = get_xui_service()
+        try:
+            client_data = await xui.create_client(
+                email=str(user_obj.id),
+                inbound_ids=[XUI_DEFAULT_INBOUND_ID],
+            )
+            if not client_data:
+                raise Exception("X-UI returned no data")
+
+            sub_id = client_data.get("subId", "")
+            profile_link = xui.generate_subscription_url(str(sub_id))
+        except Exception as e:
+            text = f"😔 Ошибка при создании профиля в X-UI: {e}"
+            try:
+                await callback.message.answer(text, parse_mode="HTML")
+            except Exception:
+                pass
+            return
+
+        profile_uuid = client_data.get("id", str(uuid.uuid4()))
+        profile = VPNProfile(
+            user_id=user_obj.id,
+            protocol="vless",
+            profile_uuid=str(profile_uuid),
+            sub_id=str(sub_id) if sub_id else None,
+            profile_link=profile_link,
+            server_name="HutepVPN Server",
+            is_active=True,
+        )
+        session.add(profile)
+        await session.commit()
+
+        text = (
+            "🔄 <b>VPN профиль обновлён!</b>\n\n"
+            f"📋 <b>Новая ссылка:</b>\n"
+            f"<code>{profile_link}</code>\n\n"
+            "⚠️ Не забудьте обновить подписку в приложении!"
+        )
+        try:
+            await callback.message.answer(text, parse_mode="HTML")
+        except Exception:
+            pass
+
+
 @router.callback_query(F.data == "vpn_instructions")
 async def vpn_instructions(callback: CallbackQuery) -> None:
     """Инструкция по подключению."""

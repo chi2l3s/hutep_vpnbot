@@ -9,6 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.db.models import Subscription, User, VPNProfile
 from bot.services.xui_service import get_xui_service, XUIServiceError
 
+XUI_DEFAULT_INBOUND_ID = 1
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +52,7 @@ class VPNService:
         try:
             client_data = await self.xui.create_client(
                 email=str(user.id),
-                inbound_id=settings.xui_inbound_id,
+                inbound_ids=[XUI_DEFAULT_INBOUND_ID],
             )
 
             if not client_data:
@@ -58,7 +60,7 @@ class VPNService:
 
             profile_uuid = client_data.get("id", str(uuid.uuid4()))
             sub_id = client_data.get("subId", "")
-            profile_link = f"{settings.subscription_domain}/sub/{sub_id}"
+            profile_link = self.xui.generate_subscription_url(str(sub_id))
 
             profile = VPNProfile(
                 user_id=user.id,

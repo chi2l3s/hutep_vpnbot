@@ -1,0 +1,57 @@
+# Git
+.git/
+.gitignore
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+
+# Тесты
+.pytest_cache/
+tests/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Документация
+*.md
+!requirements.txt
+!README.md
+
+# Docker
+Dockerfile
+docker-compose*.yml
+.dockerignore
+nginx/
+
+# База данных и данные (создаются в контейнере)
+data/
+
+# Секретные файлы
+*.pem
+*.key
+*.crt
+*.pfx
+.env
+.env.*

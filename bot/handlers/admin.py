@@ -44,10 +44,10 @@ async def admin_users(callback: CallbackQuery) -> None:
     from sqlalchemy import select, func
     session_maker = get_session_maker()
     async with session_maker() as session:
-        total = (await session.execute(select(func.count(User.id))).scalar()) or 0
+        total = (await session.execute(select(func.count(User.id)).where(User.id >= 0)).scalar() or 0)
         active = (await session.execute(
             select(func.count(Subscription.id)).where(Subscription.is_active == True)
-        ).scalar()) or 0
+        ).scalar() or 0)
         users = (await session.execute(
             select(User).order_by(User.created_at.desc()).limit(10)
         ).scalars().all())
