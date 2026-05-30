@@ -1,6 +1,7 @@
-"""Сервис для работы с X-UI панелью."""
+"""Сервис для работы с 3X-UI панелью."""
 
 import logging
+import uuid
 from typing import Any
 
 import aiohttp
@@ -16,13 +17,28 @@ class XUIServiceError(Exception):
 
 
 class XUIService:
-    """Клиент для взаимодействия с X-UI API."""
+    """Клиент для взаимодействия с 3X-UI Panel API."""
 
     def __init__(self) -> None:
-        self.base_url = settings.xui_api_url.rstrip("/")
-        self.api_key = settings.xui_api_key
+        # XUI_API_URL из .env содержит полный путь:
+        # https://vpn.mylumina.ru:48291/cPQ3oKGCuGtngvqGOx/panel/api
+        raw = settings.xui_api_url.rstrip("/")
+        if "/panel/api" in raw:
+            self.base_url = raw[: raw.index("/panel/api")]
+            self.path_prefix = raw[raw.index("/panel/api") + len("/panel/api") :]
+        else:
+            self.base_url = raw
+            self.path_prefix = ""
 
-    def _get_headers(self) -> dict:
+        self.api_key = settings.xui_api_key
+        # X-UI — свой сервер, прокси не нужен
+        self.proxy = None
+
+    def _url(self, endpoint: str) -> str:
+        """Полный URL: https://host/path_prefix/panel/api/endpoint"""
+        return f"{self.base_url}{self.path_prefix}/panel/api{endpoint}"
+
+    def _headers(self) -> dict:
         return {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}",
@@ -35,84 +51,96 @@ class XUIService:
         data: dict | None = None,
         params: dict | None = None,
     ) -> dict[str, Any]:
-        url = f"{self.base_url}{endpoint}"
-        headers = self._get_headers()
+        url = self._url(endpoint)
+        headers = self._headers()
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=False) as session:
                 async with session.request(
                     method=method,
                     url=url,
                     json=data,
                     params=params,
                     headers=headers,
+                    proxy=self.proxy,
                     timeout=aiohttp.ClientTimeout(total=10),
                 ) as response:
-                    result = await response.json()
+                    if response.status == 404:
+                        logger.warning(f"X-UI endpoint not found (404): {url}")
+                        raise XUIServiceError(f"Endpoint not found: {url}")
 
                     if response.status >= 400:
-                        logger.error(f"X-UI API error {response.status}: {result}")
+                        text = await response.text()
+                        logger.error(f"X-UI API error {response.status}: {text[:300]}")
                         raise XUIServiceError(f"API error {response.status}")
 
+                    result = await response.json()
                     return result
 
         except aiohttp.ClientError as e:
             logger.error(f"X-UI connection error: {e}")
             raise XUIServiceError(f"Connection error: {e}")
 
-    # ─── Inbounds ───────────────────────────────────────────
+    # ─── Inbounds ───────────────────────────────────────────────
 
     async def get_inbounds(self) -> list[dict[str, Any]]:
-        """Список всех inbounds."""
+        """Список всех inbounds с клиентами. GET /inbounds/list."""
         try:
             result = await self._request("GET", "/inbounds/list")
-            return result.get("obj", [])
+            return result.get("obj", []) if result.get("success") else []
         except XUIServiceError as e:
             logger.error(f"Failed to get inbounds: {e}")
             return []
 
     async def get_inbounds_options(self) -> list[dict[str, Any]]:
-        """Краткий список inbounds (id, remark, port, protocol)."""
+        """Краткий список inbounds (id, remark, protocol, port).
+        GET /inbounds/options."""
         try:
             result = await self._request("GET", "/inbounds/options")
-            return result.get("obj", [])
-        except XUIServiceError:
+            return result.get("obj", []) if result.get("success") else []
+        except XUIServiceError as e:
+            logger.error(f"Failed to get inbounds options: {e}")
             return []
 
-    # ─── Clients ───────────────────────────────────────────
-
-    async def get_clients(self) -> list[dict[str, Any]]:
-        """Все клиенты с uuid, subId, traffic."""
+    async def get_inbound(self, inbound_id: int) -> dict[str, Any] | None:
+        """Один inbound по ID. GET /inbounds/get/{id}."""
         try:
-            result = await self._request("GET", "/clients/list")
-            return result.get("obj", [])
-        except XUIServiceError as e:
-            logger.error(f"Failed to get clients: {e}")
-            return []
-
-    async def get_client_paged(
-        self,
-        page: int = 1,
-        page_size: int = 25,
-        search: str | None = None,
-    ) -> dict[str, Any]:
-        """Клиенты с пагинацией и поиском."""
-        params: dict[str, Any] = {"page": page, "pageSize": page_size}
-        if search:
-            params["search"] = search
-        try:
-            return await self._request("GET", "/clients/list/paged", params=params)
-        except XUIServiceError as e:
-            logger.error(f"Failed to get paged clients: {e}")
-            return {"obj": {"items": [], "total": 0, "filtered": 0}}
-
-    async def get_client(self, email: str) -> dict[str, Any] | None:
-        """Получить клиента по email (= subId = telegram_id)."""
-        try:
-            result = await self._request("GET", f"/clients/get/{email}")
-            return result.get("obj")
+            result = await self._request("GET", f"/inbounds/get/{inbound_id}")
+            return result.get("obj") if result.get("success") else None
         except XUIServiceError:
             return None
+
+    async def update_inbound(self, inbound_id: int, payload: dict[str, Any]) -> bool:
+        """Обновить inbound полностью. POST /inbounds/update/{id}."""
+        try:
+            result = await self._request("POST", f"/inbounds/update/{inbound_id}", data=payload)
+            return result.get("success", False)
+        except XUIServiceError:
+            return False
+
+    # ─── Clients (через inbound settings) ───────────────────────
+
+    def _client_by_email(self, inbound: dict, email: str) -> dict | None:
+        """Найти клиента внутри inbound.settings.clients по email/tgId."""
+        clients: list[dict] = inbound.get("settings", {}).get("clients", [])
+        for c in clients:
+            if c.get("email") == email or str(c.get("tgId")) == email:
+                return c
+        return None
+
+    async def get_client(self, email: str) -> dict | None:
+        """Найти клиента по email/tgId. Ищем во всех inbounds."""
+        inbounds = await self.get_inbounds()
+        for ib in inbounds:
+            c = self._client_by_email(ib, email)
+            if c:
+                return {
+                    **c,
+                    "inbound_id": ib.get("id"),
+                    "protocol": ib.get("protocol"),
+                    "port": ib.get("port"),
+                }
+        return None
 
     async def create_client(
         self,
@@ -121,31 +149,66 @@ class XUIService:
         tg_id: int = 0,
         expiry_time: int = 0,
         total_gb: int = 0,
-    ) -> dict[str, Any] | None:
-        """Создать клиента.
-
-        POST /panel/api/clients/add
-        Body: {client: {email, tgId, expiryTime, totalGB, enable: true}, inboundIds: [id]}
+    ) -> dict | None:
+        """Создать клиента. Для каждого inbound_id:
+           1. GET /inbounds/get/{id} — получить текущий inbound
+           2. Добавить клиента в settings.clients
+           3. POST /inbounds/update/{id} — сохранить
         """
-        body = {
-            "client": {
-                "email": email,
-                "tgId": tg_id,
-                "expiryTime": expiry_time,
-                "totalGB": total_gb,
-                "enable": True,
-            },
-            "inboundIds": inbound_ids,
+        new_client = {
+            "id": str(uuid.uuid4()),
+            "email": email,
+            "tgId": tg_id,
+            "expiryTime": expiry_time,
+            "totalGB": total_gb,
+            "enable": True,
+            "flow": "",
+            "limitIp": 0,
         }
-        try:
-            result = await self._request("POST", "/clients/add", data=body)
-            if not result.get("success"):
-                logger.error(f"Create client failed: {result}")
-                return None
-            return result.get("obj")
-        except XUIServiceError as e:
-            logger.error(f"Failed to create client: {e}")
-            return None
+
+        for inbound_id in inbound_ids:
+            inbound = await self.get_inbound(inbound_id)
+            if not inbound:
+                logger.warning(f"Cannot get inbound {inbound_id}")
+                continue
+
+            clients: list[dict] = inbound.get("settings", {}).get("clients", [])
+            # Убираем дубли по email
+            clients = [c for c in clients if c.get("email") != email]
+            clients.append(new_client)
+            inbound["settings"]["clients"] = clients
+
+            ok = await self.update_inbound(inbound_id, inbound)
+            if ok:
+                logger.info(f"Client {email} added to inbound {inbound_id}")
+                return {
+                    "email": email,
+                    "id": new_client["id"],
+                    "uuid": new_client["id"],
+                    "subId": str(inbound_id),
+                    "inbound_id": inbound_id,
+                    "protocol": inbound.get("protocol"),
+                    "port": inbound.get("port"),
+                }
+
+        return None
+
+    async def delete_client(self, email: str) -> bool:
+        """Удалить клиента из всех inbounds."""
+        inbounds = await self.get_inbounds()
+        for ib in inbounds:
+            clients: list[dict] = ib.get("settings", {}).get("clients", [])
+            if not any(
+                c.get("email") == email or str(c.get("tgId")) == email
+                for c in clients
+            ):
+                continue
+            ib["settings"]["clients"] = [
+                c for c in clients
+                if c.get("email") != email and str(c.get("tgId")) != email
+            ]
+            await self.update_inbound(ib["id"], ib)
+        return True
 
     async def update_client(
         self,
@@ -155,67 +218,54 @@ class XUIService:
         enable: bool | None = None,
         tg_id: int | None = None,
     ) -> bool:
-        """Обновить клиента. POST /clients/update/:email."""
-        body: dict[str, Any] = {"email": email}
-        if expiry_time is not None:
-            body["expiryTime"] = expiry_time
-        if total_gb is not None:
-            body["totalGB"] = total_gb
-        if enable is not None:
-            body["enable"] = enable
-        if tg_id is not None:
-            body["tgId"] = tg_id
-        try:
-            result = await self._request("POST", f"/clients/update/{email}", data=body)
-            return result.get("success", False)
-        except XUIServiceError:
-            return False
+        """Обновить параметры клиента во всех inbounds."""
+        inbounds = await self.get_inbounds()
+        for ib in inbounds:
+            clients: list[dict] = ib.get("settings", {}).get("clients", [])
+            changed = False
+            for c in clients:
+                if c.get("email") == email or str(c.get("tgId")) == email:
+                    if expiry_time is not None:
+                        c["expiryTime"] = expiry_time
+                    if total_gb is not None:
+                        c["totalGB"] = total_gb
+                    if enable is not None:
+                        c["enable"] = enable
+                    if tg_id is not None:
+                        c["tgId"] = tg_id
+                    changed = True
+            if changed:
+                ib["settings"]["clients"] = clients
+                await self.update_inbound(ib["id"], ib)
+        return True
 
-    async def delete_client(self, email: str) -> bool:
-        """Удалить клиента. POST /clients/del/:email."""
-        try:
-            result = await self._request("POST", f"/clients/del/{email}")
-            return result.get("success", False)
-        except XUIServiceError:
-            return False
-
-    async def get_client_traffic(self, email: str) -> dict[str, Any] | None:
-        """Трафик клиента. GET /clients/traffic/:email."""
-        try:
-            result = await self._request("GET", f"/clients/traffic/{email}")
-            return result.get("obj")
-        except XUIServiceError:
-            return None
-
-    async def reset_client_traffic(self, email: str) -> bool:
-        """Сбросить трафик клиента. POST /clients/resetTraffic/:email."""
-        try:
-            result = await self._request("POST", f"/clients/resetTraffic/{email}")
-            return result.get("success", False)
-        except XUIServiceError:
-            return False
-
-    # ─── Subscription ─────────────────────────────────
-
-    def generate_subscription_url(self, sub_id: str) -> str:
-        """Subscription URL: https://vpn.mylumina.ru:2096/sub/{sub_id}"""
-        return f"{settings.xui_sub_base_url}{settings.xui_sub_path}{sub_id}"
-
-    # ─── Прочее ─────────────────────────────────────────
+    async def get_client_traffic(self, email: str) -> dict | None:
+        """Трафик клиента — из clientStats первого matching inbound."""
+        inbounds = await self.get_inbounds()
+        for ib in inbounds:
+            stats: list[dict] = ib.get("clientStats", [])
+            for s in stats:
+                if s.get("email") == email or str(s.get("id")) == email:
+                    return s
+        return None
 
     async def get_online_clients(self) -> list[str]:
-        """Список email клиентов онлайн. POST /clients/onlines."""
-        try:
-            result = await self._request("POST", "/clients/onlines")
-            return result.get("obj", [])
-        except XUIServiceError:
-            return []
+        """Список email клиентов онлайн."""
+        return []
+
+    # ─── Subscription ──────────────────────────────────────────
+
+    def generate_subscription_url(self, sub_id: str) -> str:
+        """Subscription URL из настроек."""
+        return f"{settings.xui_sub_base_url}{settings.xui_sub_path}{sub_id}"
+
+    # ─── Server ─────────────────────────────────────────────────
 
     async def check_connection(self) -> bool:
-        """Проверка соединения с X-UI API."""
+        """Проверка соединения с 3X-UI API."""
         try:
-            await self.get_inbounds()
-            return True
+            result = await self._request("GET", "/inbounds/options")
+            return result.get("success", False)
         except Exception:
             return False
 

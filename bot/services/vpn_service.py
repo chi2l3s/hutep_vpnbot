@@ -52,15 +52,15 @@ class VPNService:
         try:
             client_data = await self.xui.create_client(
                 email=str(user.id),
-                inbound_ids=[XUI_DEFAULT_INBOUND_ID],
+                inbound_ids=[inbound_id],
             )
 
             if not client_data:
                 raise VPNServiceError("Failed to create client in X-UI")
 
-            profile_uuid = client_data.get("id", str(uuid.uuid4()))
+            profile_uuid = client_data.get("uuid") or client_data.get("id", str(uuid.uuid4()))
             sub_id = client_data.get("subId", "")
-            profile_link = self.xui.generate_subscription_url(str(sub_id))
+            profile_link = self.xui.generate_subscription_url(str(sub_id) if sub_id else str(user.id))
 
             profile = VPNProfile(
                 user_id=user.id,

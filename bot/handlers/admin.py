@@ -4,6 +4,7 @@ import logging
 
 from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
+from sqlalchemy import select, func
 
 from bot.config import settings
 from bot.db.models import User, Subscription, get_session_maker
@@ -22,8 +23,6 @@ def _build_admin_keyboard():
     return get_admin_keyboard()
 
 
-# ─── Handlers ─────────────────────────────────────────────────
-
 @router.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
@@ -41,16 +40,15 @@ async def admin_users(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         return
 
-    from sqlalchemy import select, func
     session_maker = get_session_maker()
     async with session_maker() as session:
-        total = (await session.execute(select(func.count(User.id)).where(User.id >= 0)).scalar() or 0)
+        total = (await session.execute(select(func.count(User.id)).where(User.id >= 0))).scalar() or 0
         active = (await session.execute(
             select(func.count(Subscription.id)).where(Subscription.is_active == True)
-        ).scalar() or 0)
+        )).scalar() or 0
         users = (await session.execute(
             select(User).order_by(User.created_at.desc()).limit(10)
-        ).scalars().all())
+        )).scalars().all()
 
     text = (
         f"👥 <b>Пользователи</b>\n\n"
@@ -78,7 +76,9 @@ async def admin_user_card(callback: CallbackQuery) -> None:
         if not user:
             await callback.message.answer("❌ Пользователь не найден.")
             return
-        sub = await session.get(Subscription, user_id)
+        sub = (await session.execute(
+            select(Subscription).where(Subscription.user_id == user_id)
+        )).scalar_one_or_none()
         text = (
             f"👤 <b>{user.full_name}</b>\n"
             f"🆔 <code>{user.id}</code>\n"
@@ -109,14 +109,15 @@ async def admin_confirm_give(callback: CallbackQuery) -> None:
     user_id = int(parts[2])
     days = int(parts[3])
 
-    # БД
     session_maker = get_session_maker()
     async with session_maker() as session:
         user = await session.get(User, user_id)
         if not user:
             await callback.message.answer(f"❌ Пользователь {user_id} не найден.")
             return
-        sub = await session.get(Subscription, user_id)
+        sub = (await session.execute(
+            select(Subscription).where(Subscription.user_id == user_id)
+        )).scalar_one_or_none()
         if sub:
             sub.days = days
             sub.start_date = days_from_now(0)
@@ -134,34 +135,20 @@ async def admin_confirm_give(callback: CallbackQuery) -> None:
         await session.commit()
         full_name = user.full_name
 
-    # X-UI
-    import asyncio
     from bot.services.xui_service import get_xui_service
     xui = get_xui_service()
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            inbounds = loop.run_until_complete(xui.get_inbounds_options())
-        finally:
-            loop.close()
+        inbounds = await xui.get_inbounds_options()
         inbound_ids = [ib["id"] for ib in inbounds if ib.get("id")]
         if not inbound_ids:
             inbound_ids = [1]
 
-        loop2 = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop2)
-        try:
-            existing = loop2.run_until_complete(xui.get_client(str(user_id)))
-            if existing:
-                sub_id_val = existing.get("subId") or str(user_id)
-            else:
-                result = loop2.run_until_complete(
-                    xui.create_client(email=str(user_id), inbound_ids=inbound_ids)
-                )
-                sub_id_val = str(user_id) if result else None
-        finally:
-            loop2.close()
+        existing = await xui.get_client(str(user_id))
+        if existing:
+            sub_id_val = existing.get("subId") or str(user_id)
+        else:
+            result = await xui.create_client(email=str(user_id), inbound_ids=inbound_ids)
+            sub_id_val = str(user_id) if result else None
 
         if sub_id_val:
             sub_url = xui.generate_subscription_url(sub_id_val)
@@ -185,13 +172,14 @@ async def admin_confirm_give(callback: CallbackQuery) -> None:
 async def admin_stats(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
         return
-    from sqlalchemy import select, func
+
     session_maker = get_session_maker()
     async with session_maker() as session:
-        total = (await session.execute(select(func.count(User.id))).scalar()) or 0
+        total = (await session.execute(select(func.count(User.id)))).scalar() or 0
         active = (await session.execute(
             select(func.count(Subscription.id)).where(Subscription.is_active == True)
-        ).scalar()) or 0
+        )).scalar() or 0
+
     conv = active / total * 100 if total else 0
     text = (
         f"📊 <b>Статистика</b>\n\n"
@@ -236,7 +224,9 @@ async def admin_give_cmd(message: Message) -> None:
         if not user:
             await message.answer(f"❌ Пользователь {user_id} не найден.")
             return
-        sub = await session.get(Subscription, user_id)
+        sub = (await session.execute(
+            select(Subscription).where(Subscription.user_id == user_id)
+        )).scalar_one_or_none()
         if sub:
             sub.days = days
             sub.start_date = days_from_now(0)
@@ -254,33 +244,20 @@ async def admin_give_cmd(message: Message) -> None:
         await session.commit()
         full_name = user.full_name
 
-    import asyncio
     from bot.services.xui_service import get_xui_service
     xui = get_xui_service()
     try:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            inbounds = loop.run_until_complete(xui.get_inbounds_options())
-        finally:
-            loop.close()
+        inbounds = await xui.get_inbounds_options()
         inbound_ids = [ib["id"] for ib in inbounds if ib.get("id")]
         if not inbound_ids:
             inbound_ids = [1]
 
-        loop2 = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop2)
-        try:
-            existing = loop2.run_until_complete(xui.get_client(str(user_id)))
-            if existing:
-                sub_id_val = existing.get("subId") or str(user_id)
-            else:
-                result = loop2.run_until_complete(
-                    xui.create_client(email=str(user_id), inbound_ids=inbound_ids)
-                )
-                sub_id_val = str(user_id) if result else None
-        finally:
-            loop2.close()
+        existing = await xui.get_client(str(user_id))
+        if existing:
+            sub_id_val = existing.get("subId") or str(user_id)
+        else:
+            result = await xui.create_client(email=str(user_id), inbound_ids=inbound_ids)
+            sub_id_val = str(user_id) if result else None
 
         if sub_id_val:
             sub_url = xui.generate_subscription_url(sub_id_val)
