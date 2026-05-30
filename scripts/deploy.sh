@@ -1,114 +1,122 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────
 # HutepVPN Bot — Deploy Script
-# Быстрый деплой на VPS: собирает и запускает Docker-стек
-# ─────────────────────────────────────────────────────────────
 set -euo pipefail
 
-# ── Цвета ────────────────────────────────────────────────────
-RED='\\033[0;31m'
-GREEN='\\033[0;32m'
-YELLOW='\\033[1;33m'
-CYAN='\\033[0;36m'
-NC='\\033[0m' # No Color
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m'
 
-info()    { echo -e \"${CYAN}[INFO]${NC} $1\"; }
-success() { echo -e \"${GREEN}[OK]${NC} $1\"; }
-warn()    { echo -e \"${YELLOW}[WARN]${NC} $1\"; }
-error()   { echo -e \"${RED}[ERROR]${NC} $1\"; exit 1; }
+info()    { echo -e "${CYAN}[INFO]${NC} $1"; }
+success() { echo -e "${GREEN}[OK]${NC} $1"; }
+warn()    { echo -e "${YELLOW}[WARN]${NC} $1"; }
+error()   { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-# ── Проверки ──────────────────────────────────────────────────
+# Check prerequisites
 check() {
-    command -v docker &>/dev/null || error \"Docker не установлен. Установите Docker: https://docs.docker.com/engine/install/\"
-    command -v docker compose &>/dev/null || error \"Docker Compose не найден. Установите Docker Compose Plugin.\"
-    [[ -f .env ]] || error \".env не найден. Скопируйте .env.example в .env и заполните переменные.\"
-    grep -q \"BOT_TOKEN=\" .env && grep -q \"WEBHOOK_HOST=\" .env \
-        || error \".env должен содержать BOT_TOKEN и WEBHOOK_HOST\"
+    if ! command -v docker &>/dev/null; then
+        error "Docker not installed. See: https://docs.docker.com/engine/install/"
+    fi
+    if ! docker compose version &>/dev/null && ! docker-compose version &>/dev/null; then
+        error "Docker Compose not found. Install Docker Compose Plugin."
+    fi
+    if [ ! -f .env ]; then
+        error ".env not found. Copy .env.example to .env and fill it."
+    fi
 }
 
-# ── Docker-слой ───────────────────────────────────────────────
+# Get docker compose command
+get_docker_compose() {
+    if docker compose version &>/dev/null; then
+        echo "docker compose"
+    else
+        echo "docker-compose"
+    fi
+}
+
+DC=$(get_docker_compose)
+
 build() {
-    info \"Сборка образов...\"
-    docker compose build --no-cache bot
-    success \"Образ бота собран\"
+    info "Building images..."
+    $DC build --no-cache bot
+    success "Bot image built"
 }
 
 start() {
-    info \"Запуск контейнеров...\"
-    docker compose up -d --remove-orphans
-    success \"Контейнеры запущены\"
+    info "Starting containers..."
+    $DC up -d --remove-orphans
+    success "Containers started"
 }
 
 restart_bot() {
-    info \"Перезапуск бота...\"
-    docker compose restart bot
-    success \"Бот перезапущен\"
+    info "Restarting bot..."
+    $DC restart bot
+    success "Bot restarted"
 }
 
 logs() {
-    info \"Последние 100 строк логов бота:\"
-    docker compose logs --tail=100 bot
+    info "Last 100 log lines:"
+    $DC logs --tail=100 bot
 }
 
-status() {
-    info \"Статус контейнеров:\"
-    docker compose ps
-    echo
-    info \"Статус бота:\"
-    docker compose logs --tail=5 bot
+status_cmd() {
+    info "Container status:"
+    $DC ps
 }
 
-shell() {
-    docker compose exec bot /bin/bash
+shell_bot() {
+    $DC exec bot /bin/bash
 }
 
-stop() {
-    info \"Остановка контейнеров...\"
-    docker compose down
-    success \"Стоп. Данные сохранены в Docker volume.\"
+stop_cmd() {
+    info "Stopping containers..."
+    $DC down
+    success "Containers stopped"
 }
 
 pull_update() {
-    info \"Pull + rebuild...\"
+    info "Pulling updates..."
     git pull
-    docker compose build --pull bot
-    docker compose up -d --remove-orphans
-    success \"Обновление применено\"
+    $DC build --pull bot
+    $DC up -d --remove-orphans
+    success "Update applied"
 }
 
-# ── Help ──────────────────────────────────────────────────────
 usage() {
     cat <<EOF
-Использование: ./scripts/deploy.sh <команда>
+Usage: ./scripts/deploy.sh <command>
 
-Команды:
-  build      Собрать Docker-образы
-  start      Собрать (если нужно) и запустить
-  restart    Перезапустить бота
-  stop       Остановить контейнеры
-  logs       Показать логи бота
-  status     Статус контейнеров
-  shell      Зайти в контейнер бота (bash)
+Commands:
+  build      Build Docker images
+  start      Build (if needed) and start
+  restart    Restart bot
+  stop       Stop containers
+  logs       Show bot logs
+  status     Container status
+  shell      Enter bot container (bash)
   pull       git pull + rebuild + restart
-  help       Показать эту справку
+  help       Show this help
 
-Пример:
+Examples:
   ./scripts/deploy.sh start
+  ./scripts/deploy.sh logs
+  ./scripts/deploy.sh restart
 EOF
 }
 
-# ── Main ───────────────────────────────────────────────────────
 COMMAND="${1:-help}"
 
 case "$COMMAND" in
     build)   check; build ;;
     start)   check; build; start ;;
     restart) check; restart_bot ;;
-    stop)    stop ;;
+    stop)    stop_cmd ;;
     logs)    logs ;;
-    status)  status ;;
-    shell)   shell ;;
+    status)  status_cmd ;;
+    shell)   shell_bot ;;
     pull)    pull_update ;;
-    help)    usage ;;
-    *)       error \"Неизвестная команда: $COMMAND. Используйте: ./scripts/deploy.sh help\" ;;
+    help|--help|-h) usage ;;
+    *)       error "Unknown command: $COMMAND. Use: ./scripts/deploy.sh help" ;;
 esac
