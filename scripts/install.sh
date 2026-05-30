@@ -271,6 +271,15 @@ main() {
 
     cd "$(dirname "$0")/.."
 
+    # Если запущен через pipe (curl | bash), $0 пустой — ищем проект
+    if [ ! -f docker-compose.yml ] && [ -d /opt/hutep_vpnbot ]; then
+        cd /opt/hutep_vpnbot
+    fi
+
+    if [ ! -f docker-compose.yml ]; then
+        error "docker-compose.yml not found. Are you in the right directory?"
+    fi
+
     if [ "$(id -u)" -ne 0 ]; then
         warn "Not running as root. Some operations may fail."
     fi
